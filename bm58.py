@@ -32,20 +32,24 @@ class BeurerBM58():
 
     # Get number of records
     def record_count(self):
-        getrecc_b = [0xa2]
-        self.dev.ctrl_transfer(0x21, 0x09, 0x0200, 0, getrecc_b + self.padding)
+        getrecord_count_byte = [0xa2]
+        self.dev.ctrl_transfer(0x21,
+                               0x09,
+                               0x0200,
+                               0,
+                               getrecord_count_byte + self.padding)
         return self.dev.read(0x81, 8)[0]
 
     # Read records
     def get_records(self, count):
-        getrec_b = [0xa3]
+        getrecord_b = [0xa3]
         records = {}
         for i in range(count):
             self.dev.ctrl_transfer(0x21,
                                    0x09,
                                    0x0200,
                                    0,
-                                   getrec_b + [i + 1] + self.padding)
+                                   getrecord_b + [i + 1] + self.padding)
 
             # Put everything in a nested dict
             dataset = self.dev.read(0x81, 8)
@@ -59,7 +63,18 @@ class BeurerBM58():
             records[i]['m'] = dataset[6]
             i += 1
 
+        self.terminate()
         return records
+
+    # Terminate connection
+    def terminate(self):
+        term_bytes = [0xf7, 0xf6]
+        for i in term_bytes:
+            self.dev.ctrl_transfer(0x21,
+                                   0x09,
+                                   0x0200,
+                                   0,
+                                   [i] + self.padding)
 
 
 if __name__ == "__main__":
