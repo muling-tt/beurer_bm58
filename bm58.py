@@ -19,6 +19,15 @@ class BeurerBM58():
         self.dev = usb.core.find(idVendor=self.vid, idProduct=self.pid)
         if self.dev is None:
             raise ValueError("device not found")
+
+        # Detach usbhid driver
+        if self.dev.is_kernel_driver_active(0):
+            try:
+                self.dev.detach_kernel_driver(0)
+            except usb.core.USBError as e:
+                sys.exit("Unable to detach kernel driver: %s" % str(e))
+
+        # Set one and only configuration
         self.dev.set_configuration()
 
         # Send device initialization bytes, device will respond with identifier
