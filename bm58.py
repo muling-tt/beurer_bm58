@@ -1,7 +1,12 @@
+#!/usr/bin/env python3
+
 import usb.core
 import usb.util
 import usb.control
+import datetime
 import string
+import sqlite3
+
 
 vendor_id = 0x0c45
 product_id = 0x7406
@@ -36,7 +41,7 @@ class BeurerBM58():
             self.dev.ctrl_transfer(0x21, 0x09, 0x0200, 0, [i] + self.padding)
             rx_buf += self.dev.read(0x81, 8)
         rx_data = ''.join([chr(x) for x in rx_buf])
-        identifier = filter(lambda x: x in string.printable, rx_data)[1:]
+        identifier = ''.join(list(filter(lambda x: x in string.printable, rx_data)))
         return identifier
 
     # Get number of records
@@ -66,10 +71,11 @@ class BeurerBM58():
             records[i]['sys'] = dataset[0] + 25
             records[i]['dia'] = dataset[1] + 25
             records[i]['pul'] = dataset[2]
-            records[i]['mth'] = dataset[3]
+            records[i]['month'] = dataset[3]
             records[i]['day'] = dataset[4]
-            records[i]['h'] = dataset[5]
-            records[i]['m'] = dataset[6]
+            records[i]['hour'] = dataset[5]
+            records[i]['minute'] = dataset[6]
+            records[i]['year'] = dataset[7]+2000
             i += 1
 
         self.terminate()
@@ -85,6 +91,28 @@ class BeurerBM58():
                                    0,
                                    [i] + self.padding)
 
+def write_to_database(data):
+    conn = sqlite3.connect('beurer.db')
+    c = conn.cursor()
+
+    # Create table
+    c.execute('''CREATE TABLE IF NOT EXISTS measures
+                         (date text PRIMARY KEY, systole text, diastole text, pulse text)''')
+
+    for m_id, measurement in data.items():
+        date = datetime.datetime(int(measurement['year']), int(measurement['month']), int(measurement['day']),
+                                int(measurement['hour']), int(measurement['minute']))
+        # Insert a row of data
+        c.execute("INSERT OR IGNORE INTO measures VALUES ('{0}', {1}, {2}, {3} )".format('{:%Y-%m-%d %H:%M:%S}'.format(date),
+                                                                measurement['sys'], measurement['dia'], measurement['pul']))
+
+    # Save (commit) the changes
+    conn.commit()
+
+    # We can also close the connection if we are done with it.
+    # Just be sure any changes have been committed or they will be lost.
+    conn.close()
+
 
 if __name__ == "__main__":
     beurer = BeurerBM58(vendor_id, product_id)
@@ -92,8 +120,6 @@ if __name__ == "__main__":
     count = beurer.record_count()
     records = beurer.get_records(count)
 
-    print "Identifier: '" + identifier + "'"
-    print "Records on device: " + str(count)
-
-    for record in records.iteritems():
-            print record
+    print("Identifier: '" + str(identifier) + "'")
+    print("Records on device: " + str(count))
+    write_to_database(records)
