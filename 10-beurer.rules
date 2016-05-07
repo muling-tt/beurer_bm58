@@ -1,0 +1,1 @@
+SUBSYSTEM=="usb", ACTION=="add", ENV{PRODUCT}="c45/7406/170", OWNER="scabrera"
