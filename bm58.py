@@ -1,99 +1,210 @@
+#!/usr/bin/env python3
+
 import usb.core
-import usb.util
-import usb.control
+import datetime
 import string
+import sqlite3
+import argparse
+import logging
 
-vendor_id = 0x0c45
-product_id = 0x7406
+VENDOR_ID = 0x0c45
+PRODUCT_ID = 0x7406
 
+LOGGER = logging.getLogger('BeurerBM58')
 
-class BeurerBM58():
+class BeurerConnectionException(Exception):
+    """Beurer Connection Exception"""
+    pass
+
+class BeurerBM58(object):
+    """This class interacts with the bm58 device and reads measurements from the device"""
     def __init__(self, vid, pid):
         self.vid = vid
         self.pid = pid
         self.padding = [0xf4, 0xf4, 0xf4, 0xf4, 0xf4, 0xf4, 0xf4]
+        self.dev = None
+        self._connect()
+
+    def _send_to_device(self, data):
+        """internal helper to send data to device"""
+        LOGGER.debug('sending {0}'.format(data))
+        #  bmRequestType, bRequest, wValue=0, wIndex=0, data_or_wLength=None, timeout=None
+        self.dev.ctrl_transfer(0x21, 0x09, 0x0200, 0, data + self.padding)
+
+    def _read_from_device(self, size):
+        """internal helper to read data from device"""
+        LOGGER.debug('reading data with size {0}'.format(size))
+        result = self.dev.read(0x81, size)
+        LOGGER.debug('returned {0} from device'.format(result))
+        return result
+
+    def _connect(self):
+        """find the device in the usb subsystem and try to condect to it"""
+        LOGGER.debug('searching for device with VendorID {0} and ProductID {1}'.format(self.vid, self.pid))
+        self.dev = usb.core.find(idVendor=self.vid, idProduct=self.pid)
+        if self.dev is None:
+            raise BeurerConnectionException("device not found")
+        LOGGER.debug('found device {0} - manufacturer: {1} - serial_number: {2}'.format(self.dev.product,
+                                                                                        self.dev.manufacturer,
+                                                                                        self.dev.serial_number))
+        # Detach usbhid driver
+        if self.dev.is_kernel_driver_active(0):
+            LOGGER.debug('device is in use by kernel driver so trying to detach it')
+            try:
+                self.dev.detach_kernel_driver(0)
+            except usb.core.USBError as ex:
+                BeurerConnectionException("Unable to detach kernel driver: %s" % str(ex))
+
+        LOGGER.debug('set configuration active')
+        self.dev.set_configuration()
 
     # Find USB device, initialize it and get identifier
     def initialize(self):
+        """ initialize device and return the device identifier
+
+        :returns: identifier
+        """
+        LOGGER.debug('send device initialization bytes, device will respond with identifier')
         init_bytes = [0xaa, 0xa4, 0xa5, 0xa6, 0xa7]
-        self.dev = usb.core.find(idVendor=self.vid, idProduct=self.pid)
-        if self.dev is None:
-            raise ValueError("device not found")
-
-        # Detach usbhid driver
-        if self.dev.is_kernel_driver_active(0):
-            try:
-                self.dev.detach_kernel_driver(0)
-            except usb.core.USBError as e:
-                sys.exit("Unable to detach kernel driver: %s" % str(e))
-
-        # Set one and only configuration
-        self.dev.set_configuration()
-
-        # Send device initialization bytes, device will respond with identifier
         rx_buf = []
         for i in init_bytes:
-            self.dev.ctrl_transfer(0x21, 0x09, 0x0200, 0, [i] + self.padding)
-            rx_buf += self.dev.read(0x81, 8)
+            self._send_to_device([i])
+            rx_buf += self._read_from_device(8)
+
         rx_data = ''.join([chr(x) for x in rx_buf])
-        identifier = filter(lambda x: x in string.printable, rx_data)[1:]
+        identifier = ''.join(s for s in rx_data if s in string.printable)
+
+        LOGGER.debug('return identifier {0}'.format(identifier))
+
         return identifier
 
-    # Get number of records
     def record_count(self):
-        getrecord_count_byte = [0xa2]
-        self.dev.ctrl_transfer(0x21,
-                               0x09,
-                               0x0200,
-                               0,
-                               getrecord_count_byte + self.padding)
-        return self.dev.read(0x81, 8)[0]
+        """return the number of records stored on the device
 
-    # Read records
+        :returns: Number of Records
+        """
+        getrecord_count_byte = [0xa2]
+        self._send_to_device(getrecord_count_byte)
+        return self._read_from_device(8)[0]
+
     def get_records(self, count):
+        """read the records from the device
+
+        :param count int: number of records to read
+        """
         getrecord_b = [0xa3]
         records = {}
         for i in range(count):
-            self.dev.ctrl_transfer(0x21,
-                                   0x09,
-                                   0x0200,
-                                   0,
-                                   getrecord_b + [i + 1] + self.padding)
+            self._send_to_device(getrecord_b + [i + 1])
 
             # Put everything in a nested dict
-            dataset = self.dev.read(0x81, 8)
+            dataset = self._read_from_device(8)
             records[i] = {}
-            records[i]['sys'] = dataset[0] + 25
-            records[i]['dia'] = dataset[1] + 25
-            records[i]['pul'] = dataset[2]
-            records[i]['mth'] = dataset[3]
+            records[i]['systole'] = dataset[0] + 25
+            records[i]['diastole'] = dataset[1] + 25
+            records[i]['pulse'] = dataset[2]
+            records[i]['month'] = dataset[3]
             records[i]['day'] = dataset[4]
-            records[i]['h'] = dataset[5]
-            records[i]['m'] = dataset[6]
+            records[i]['hour'] = dataset[5]
+            records[i]['minute'] = dataset[6]
+            records[i]['year'] = dataset[7]+2000
             i += 1
 
-        self.terminate()
         return records
 
     # Terminate connection
     def terminate(self):
+        """disconnect from the device"""
+        LOGGER.debug('terminating connection')
         term_bytes = [0xf7, 0xf6]
         for i in term_bytes:
-            self.dev.ctrl_transfer(0x21,
-                                   0x09,
-                                   0x0200,
-                                   0,
-                                   [i] + self.padding)
+            self._send_to_device([i])
+        self.dev.reset()
+
+def write_to_stdout(data, filename=''):
+    """write data to stdout
+
+    :param data dict: Dictionary containing the measures
+    :param filename: just a helper so sqlite and stdout class can look the same
+    """
+    print('{0:^20} | {1} | {2} | {3}'.format('DATE', 'SYSTOLE',
+                                             'DIASTOLE', 'PULSE'))
+    print('-'*50)
+    for m_id, measurement in data.items():
+        date = datetime.datetime(int(measurement['year']), int(measurement['month']), int(measurement['day']),
+                                 int(measurement['hour']), int(measurement['minute']))
+        measurement.update({'date': str(date)})
+        print('{date:^20} | {systole:^7} | {diastole:^8} | {pulse:^5}'.format(**measurement))
+
+def write_to_sqlite(data, filename):
+    """write data to sqlite database
+
+    :param data dict: Dictionary containing the measures
+    :param filename str: Filename where to write the data to
+    """
+    conn = sqlite3.connect(filename)
+    cursor = conn.cursor()
+
+    # Create table
+    cursor.execute('''CREATE TABLE IF NOT EXISTS measures
+                         (date text PRIMARY KEY, systole text, diastole text, pulse text)''')
+
+    for m_id, measurement in data.items():
+        date = datetime.datetime(int(measurement['year']), int(measurement['month']), int(measurement['day']),
+                                 int(measurement['hour']), int(measurement['minute']))
+        measurement.update({'date': str(date)})
+        LOGGER.debug('writing {date} - sys: {systole} dia: {diastole} pul: {pulse}'.format(**measurement))
+        # Insert a row of data
+        cursor.execute("INSERT OR IGNORE INTO measures VALUES ('{date}', {systole}, {diastole}, {pulse})".format(**measurement))
+
+    # Save (commit) the changes
+    conn.commit()
+    LOGGER.info('wrote {0} entries to Database'.format(len(data.items())))
+
+    # We can also close the connection if we are done with it.
+    # Just be sure any changes have been committed or they will be lost.
+    conn.close()
+
+def initialize_argument_parser():
+    """Setup argument parser
+
+    :returns: args
+    """
+
+    argparser = argparse.ArgumentParser()
+    argparser.add_argument('--parameter', action='store', default="defaultvalue",
+                           help='default parameter (default: %(default)s)')
+    argparser.add_argument('-l', '--loglevel', action='store', default="ERROR",
+                           help='Loglevel to use (default: %(default)s)')
+    argparser.add_argument('-o', '--output', action='store', choices=['sqlite', 'stdout'], default='stdout',
+                           help='Where to output the Data (default: %(default)s)')
+    argparser.add_argument('-f', '--filename', action='store', default='beurer.db',
+                           help='Filename to write output to (when using sqlite)')
+
+    args = argparser.parse_args()
+    return args
 
 
-if __name__ == "__main__":
-    beurer = BeurerBM58(vendor_id, product_id)
+def main():
+    """helper main function to satisfy pylint"""
+
+    args = initialize_argument_parser()
+    logging.basicConfig(level=getattr(logging, args.loglevel))
+
+    beurer = BeurerBM58(VENDOR_ID, PRODUCT_ID)
     identifier = beurer.initialize()
+    LOGGER.info("Identified Device: '" + str(identifier) + "'")
+
     count = beurer.record_count()
+    LOGGER.info("Records for User U1: " + str(count))
+
     records = beurer.get_records(count)
 
-    print "Identifier: '" + identifier + "'"
-    print "Records on device: " + str(count)
+    beurer.terminate()
 
-    for record in records.iteritems():
-            print record
+    globals()['write_to_' + args.output](records, args.filename)
+
+if __name__ == "__main__":
+    main()
+
+# vim:filetype=python:foldmethod=marker:autoindent:expandtab:tabstop=4
