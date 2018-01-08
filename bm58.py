@@ -104,10 +104,18 @@ class BeurerBM58(object):
             records[i]['diastole'] = dataset[1] + 25
             records[i]['pulse'] = dataset[2]
             records[i]['month'] = dataset[3]
-            records[i]['day'] = dataset[4]
             records[i]['hour'] = dataset[5]
             records[i]['minute'] = dataset[6]
             records[i]['year'] = dataset[7]+2000
+
+            day = dataset[4]
+            if day > 128:
+                 day = day - 128;
+                 records[i]['user'] = 2
+            else:
+                 records[i]['user'] = 1
+            records[i]['day'] = day
+
             i += 1
 
         return records
@@ -127,14 +135,14 @@ def write_to_stdout(data, filename=''):
     :param data dict: Dictionary containing the measures
     :param filename: just a helper so sqlite and stdout class can look the same
     """
-    print('{0:^20} | {1} | {2} | {3}'.format('DATE', 'SYSTOLE',
+    print('{0} | {1:^20} | {2} | {3} | {4}'.format('USER', 'DATE', 'SYSTOLE',
                                              'DIASTOLE', 'PULSE'))
-    print('-'*50)
+    print('-'*56)
     for m_id, measurement in data.items():
         date = datetime.datetime(int(measurement['year']), int(measurement['month']), int(measurement['day']),
                                  int(measurement['hour']), int(measurement['minute']))
         measurement.update({'date': str(date)})
-        print('{date:^20} | {systole:^7} | {diastole:^8} | {pulse:^5}'.format(**measurement))
+        print('{user:^4} | {date:^20} | {systole:^7} | {diastole:^8} | {pulse:^5}'.format(**measurement))
 
 def write_to_sqlite(data, filename):
     """write data to sqlite database
@@ -147,15 +155,15 @@ def write_to_sqlite(data, filename):
 
     # Create table
     cursor.execute('''CREATE TABLE IF NOT EXISTS measures
-                         (date text PRIMARY KEY, systole text, diastole text, pulse text)''')
+                         (date text PRIMARY KEY, systole text, diastole text, pulse text, user text)''')
 
     for m_id, measurement in data.items():
         date = datetime.datetime(int(measurement['year']), int(measurement['month']), int(measurement['day']),
                                  int(measurement['hour']), int(measurement['minute']))
         measurement.update({'date': str(date)})
-        LOGGER.debug('writing {date} - sys: {systole} dia: {diastole} pul: {pulse}'.format(**measurement))
+        LOGGER.debug('writing {date} - sys: {systole} dia: {diastole} pul: {pulse} u: {user}'.format(**measurement))
         # Insert a row of data
-        cursor.execute("INSERT OR IGNORE INTO measures VALUES ('{date}', {systole}, {diastole}, {pulse})".format(**measurement))
+        cursor.execute("INSERT OR IGNORE INTO measures VALUES ('{date}', {systole}, {diastole}, {pulse}, {user})".format(**measurement))
 
     # Save (commit) the changes
     conn.commit()
